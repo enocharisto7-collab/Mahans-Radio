@@ -12,6 +12,22 @@
   const types = {programme:'Programmes',presenter:'Presenters',news:'News',podcast:'Podcasts',advertisement:'Advertisements'};
   const statusText = (s) => ({draft:'Draft',published:'Published',archived:'Archived',new:'New',read:'Read',replied:'Replied'}[s] || s);
 
+  function downloadCSV(filename, rows) {
+    if (!rows || !rows.length) return alert('There is no data to export yet.');
+    const keys = Object.keys(rows[0]);
+    const csv = [keys.join(','), ...rows.map(row => keys.map(k => {
+      const value = row[k] == null ? '' : String(row[k]);
+      return '"' + value.replace(/"/g,'""').replace(/\\r?\\n/g,' ') + '"';
+    }).join(','))].join('\\r\\n');
+    const blob = new Blob(['\\ufeff'+csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download=filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+  function addSearchTools(target, placeholder, exportLabel) {
+    return '<div class="dash-tools"><input id="dashSearch" type="search" placeholder="'+placeholder+'"><button type="button" class="btn btn-outline" id="exportDash">'+exportLabel+'</button><button type="button" class="btn btn-outline" id="refreshDash">REFRESH</button></div>';
+  }
+
   function status(el, msg, bad) {
     if (!el) return;
     el.textContent = msg;
@@ -71,6 +87,17 @@
     if (error) throw error;
     return count || 0;
   }
+  async function renderAnalytics() {
+    const [all,published,drafts,archived,messages,newMessages,replied,media] = await Promise.all([
+      countRows('mahans_content'),countRows('mahans_content',[['status','eq','published']]),countRows('mahans_content',[['status','eq','draft']]),countRows('mahans_content',[['status','eq','archived']]),
+      countRows('mahans_messages'),countRows('mahans_messages',[['status','eq','new']]),countRows('mahans_messages',[['status','eq','replied']]),countRows('mahans_media')
+    ]);
+    const categories=await Promise.all(Object.keys(types).map(async k=>[types[k],await countRows('mahans_content',[['content_type','eq',k]])]));
+    $('dashContent').innerHTML='<h3>Station analytics</h3><p class="dash-help">A live snapshot of your website content, listener inbox and media library.</p><div class="dash-grid">'+[
+      ['Total content',all],['Published',published],['Drafts',drafts],['Archived',archived],['All messages',messages],['New messages',newMessages],['Replied messages',replied],['Media files',media]
+    ].map(x=>'<div class="stat"><b>'+x[1]+'</b><small>'+x[0]+'</small></div>').join('')+'</div><h3 style="margin-top:24px">Content by category</h3><div class="dash-list">'+categories.map(x=>'<div class="dash-item"><b>'+esc(x[0])+'</b><b>'+x[1]+'</b></div>').join('')+'</div><button class="btn btn-outline" id="refreshAnalytics" style="margin-top:16px">REFRESH ANALYTICS</button>';
+    $('refreshAnalytics').addEventListener('click',renderAnalytics);
+  }
   async function renderOverview() {
     const [published, drafts, messages, ads] = await Promise.all([
       countRows('mahans_content',[['status','eq','published']]),
@@ -103,18 +130,26 @@
       '<small id="contentStatus"></small></form>';
   }
   async function renderContent() {
-    const {data,error} = await client.from('mahans_content').select('*').order('created_at',{ascending:false}).limit(100);
+    const {data,error} = await client.from('mahans_content').select('*').order('created_at',{ascending:false}).limit(300);
     if (error) throw error;
-    $('dashContent').innerHTML = '<h3>Publish station content</h3><p class="dash-help">Create and update programmes, presenters, news, podcasts and advertising records. Set an item to Published to make it eligible for the public website.</p>'+
-      contentForm(editingId ? (data || []).find(x=>x.id===editingId) : null)+
-      '<h3 style="margin-top:24px">Content library</h3><div class="dash-list">'+(data || []).map(x=>
-        '<div class="dash-item"><span><b>'+esc(x.title)+'</b><br><small>'+esc(types[x.content_type]||x.content_type)+' · '+esc(statusText(x.status))+'</small></span>'+
-        '<span style="display:flex;gap:6px;align-items:center"><button type="button" data-edit="'+x.id+'">Edit</button><button type="button" data-delete="'+x.id+'">Delete</button></span></div>'
-      ).join('')+'</div>';
+    const rows=data||[];
+    $('dashContent').innerHTML = '<h3>Publish station content</h3><p class="dash-help">Create and update programmes, presenters, newsroom posts, podcasts and advertising records. Search, filter, export or refresh your library below.</p>'+
+      contentForm(editingId ? rows.find(x=>x.id===editingId) : null)+
+      '<h3 style="margin-top:24px">Content library</h3><div class="dash-tools"><input id="contentSearch" type="search" placeholder="Search titles, presenters and descriptions"><select id="contentTypeFilter"><option value="">All categories</option>'+Object.keys(types).map(k=>'<option value="'+k+'">'+types[k]+'</option>').join('')+'</select><select id="contentStatusFilter"><option value="">All statuses</option><option value="published">Published</option><option value="draft">Draft</option><option value="archived">Archived</option></select><button type="button" class="btn btn-outline" id="exportContent">EXPORT CSV</button><button type="button" class="btn btn-outline" id="refreshContent">REFRESH</button></div><p class="dash-help" id="contentCount"></p><div class="dash-list" id="contentList"></div>';
+    const paint=()=>{
+      const q=$('contentSearch').value.toLowerCase(), type=$('contentTypeFilter').value, st=$('contentStatusFilter').value;
+      const filtered=rows.filter(x=>(!type||x.content_type===type)&&(!st||x.status===st)&&[x.title,x.summary,x.presenter,x.body].some(v=>String(v||'').toLowerCase().includes(q)));
+      $('contentCount').textContent=filtered.length+' of '+rows.length+' items shown';
+      $('contentList').innerHTML=filtered.map(x=>'<div class="dash-item"><span><b>'+esc(x.title)+'</b><br><small>'+esc(types[x.content_type]||x.content_type)+' · '+esc(statusText(x.status))+' · '+new Date(x.created_at).toLocaleDateString()+'</small></span><span class="dash-actions"><button type="button" data-edit="'+x.id+'">Edit</button><button type="button" data-delete="'+x.id+'">Delete</button></span></div>').join('')||'<p class="dash-help">No matching content found.</p>';
+      $('contentList').querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',()=>{editingId=b.dataset.edit;renderContent();}));
+      $('contentList').querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>deleteContent(b.dataset.delete)));
+    };
+    ['contentSearch','contentTypeFilter','contentStatusFilter'].forEach(id=>$(id).addEventListener('input',paint));
+    $('exportContent').addEventListener('click',()=>downloadCSV('mahans-radio-content.csv',rows.map(({id,content_type,title,summary,presenter,schedule_text,status,created_at})=>({id,content_type,title,summary,presenter,schedule_text,status,created_at}))));
+    $('refreshContent').addEventListener('click',()=>renderContent());
     $('contentForm').addEventListener('submit',saveContent);
     if ($('cancelEdit')) $('cancelEdit').addEventListener('click',()=>{editingId=null;renderContent();});
-    $('dashContent').querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',()=>{editingId=b.dataset.edit;renderContent();}));
-    $('dashContent').querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>deleteContent(b.dataset.delete)));
+    paint();
   }
   async function saveContent(ev) {
     ev.preventDefault();
@@ -135,15 +170,22 @@
     if (error) alert(error.message); else {editingId=null;await renderContent();}
   }
   async function renderUploads() {
-    const {data,error} = await client.from('mahans_media').select('*').order('created_at',{ascending:false}).limit(80);
+    const {data,error} = await client.from('mahans_media').select('*').order('created_at',{ascending:false}).limit(300);
     if (error) throw error;
-    $('dashContent').innerHTML = '<h3>Upload station media</h3><p class="dash-help">Images, audio, video and PDF files are stored in the Mahans Radio media bucket. Maximum file size: 100 MB.</p>'+
-      '<form id="uploadForm" class="dash-form dash-file"><input type="file" name="file" accept="image/*,audio/*,video/mp4,application/pdf" required><button class="btn btn-lime" type="submit">UPLOAD FILE</button><small id="uploadStatus"></small></form>'+
-      '<h3 style="margin-top:22px">Uploaded files</h3><div class="dash-list">'+(data||[]).map(x=>
-      '<div class="dash-item"><span><b>'+esc(x.file_name)+'</b><br><small>'+esc(x.mime_type||'file')+' · '+Math.round((x.file_size||0)/1024)+' KB</small><br><a href="'+esc(x.public_url)+'" target="_blank" rel="noopener">Open file</a></span><button type="button" data-copy="'+esc(x.public_url)+'">Copy URL</button></div>'
-      ).join('')+'</div>';
+    const rows=data||[];
+    $('dashContent').innerHTML = '<h3>Upload station media</h3><p class="dash-help">Images, audio, video and PDF files are stored in the Mahans Radio media bucket. Maximum file size: 100 MB. Search your files or copy their public links.</p>'+
+      '<form id="uploadForm" class="dash-form dash-file"><input type="file" name="file" accept="image/*,audio/*,video/*,application/pdf" required><button class="btn btn-lime" type="submit">UPLOAD FILE</button><small id="uploadStatus"></small></form>'+
+      '<div class="dash-tools"><input id="mediaSearch" type="search" placeholder="Search uploaded filenames and file types"><button type="button" class="btn btn-outline" id="refreshMedia">REFRESH</button></div><p id="mediaCount" class="dash-help"></p><div class="dash-list" id="mediaList"></div>';
+    const paint=()=>{
+      const q=$('mediaSearch').value.toLowerCase(), filtered=rows.filter(x=>(x.file_name||'').toLowerCase().includes(q)||(x.mime_type||'').toLowerCase().includes(q));
+      $('mediaCount').textContent=filtered.length+' of '+rows.length+' files shown';
+      $('mediaList').innerHTML=filtered.map(x=>'<div class="dash-item"><span><b>'+esc(x.file_name)+'</b><br><small>'+esc(x.mime_type||'file')+' · '+Math.round((x.file_size||0)/1024)+' KB · '+new Date(x.created_at).toLocaleDateString()+'</small><br><a href="'+esc(x.public_url)+'" target="_blank" rel="noopener">Open file</a></span><button type="button" data-copy="'+esc(x.public_url)+'">COPY URL</button></div>').join('')||'<p class="dash-help">No matching files found.</p>';
+      $('mediaList').querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(b.dataset.copy);b.textContent='COPIED';}catch(e){prompt('Copy this URL',b.dataset.copy);}}));
+    };
     $('uploadForm').addEventListener('submit',uploadFile);
-    $('dashContent').querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(b.dataset.copy);b.textContent='Copied';}catch(e){prompt('Copy this URL',b.dataset.copy);}}));
+    $('mediaSearch').addEventListener('input',paint);
+    $('refreshMedia').addEventListener('click',renderUploads);
+    paint();
   }
   async function uploadFile(ev) {
     ev.preventDefault();
@@ -161,14 +203,21 @@
     await renderUploads();
   }
   async function renderRequests() {
-    const {data,error} = await client.from('mahans_messages').select('*').order('created_at',{ascending:false}).limit(100);
+    const {data,error} = await client.from('mahans_messages').select('*').order('created_at',{ascending:false}).limit(500);
     if (error) throw error;
-    $('dashContent').innerHTML = '<h3>Listener inbox</h3><p class="dash-help">Messages sent through the public website appear here.</p><div class="dash-list">'+(data||[]).map(x=>
-      '<div class="dash-item" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><b>'+esc(x.name)+' · '+esc(x.request_type)+'</b><small>'+esc(statusText(x.status))+'</small></div>'+
-      '<p>'+esc(x.message)+'</p><small>'+esc(x.phone||'No phone number')+' · '+new Date(x.created_at).toLocaleString()+'</small>'+
-      '<div style="margin-top:9px;display:flex;gap:7px;flex-wrap:wrap"><button data-message="'+x.id+'" data-status="read">Mark read</button><button data-message="'+x.id+'" data-status="replied">Mark replied</button><button data-message="'+x.id+'" data-status="archived">Archive</button></div></div>'
-    ).join('')+'</div>';
-    $('dashContent').querySelectorAll('[data-message]').forEach(b=>b.addEventListener('click',async()=>{const {error:e}=await client.from('mahans_messages').update({status:b.dataset.status}).eq('id',b.dataset.message);if(e)alert(e.message);else renderRequests();}));
+    const rows=data||[];
+    $('dashContent').innerHTML = '<h3>Listener inbox</h3><p class="dash-help">Search incoming requests, filter by status and export a copy for station follow-up.</p><div class="dash-tools"><input id="messageSearch" type="search" placeholder="Search name, phone or message"><select id="messageStatus"><option value="">All statuses</option><option value="new">New</option><option value="read">Read</option><option value="replied">Replied</option><option value="archived">Archived</option></select><button type="button" class="btn btn-outline" id="exportMessages">EXPORT CSV</button><button type="button" class="btn btn-outline" id="refreshMessages">REFRESH</button></div><p class="dash-help" id="messageCount"></p><div class="dash-list" id="messageList"></div>';
+    const paint=()=>{
+      const q=$('messageSearch').value.toLowerCase(), st=$('messageStatus').value;
+      const filtered=rows.filter(x=>(!st||x.status===st)&&[x.name,x.phone,x.message,x.request_type].some(v=>String(v||'').toLowerCase().includes(q)));
+      $('messageCount').textContent=filtered.length+' of '+rows.length+' messages shown';
+      $('messageList').innerHTML=filtered.map(x=>'<div class="dash-item message-item"><div><div class="message-title"><b>'+esc(x.name)+' · '+esc(x.request_type)+'</b><small>'+esc(statusText(x.status))+'</small></div><p>'+esc(x.message)+'</p><small>'+esc(x.phone||'No phone number')+' · '+new Date(x.created_at).toLocaleString()+'</small><div class="dash-actions" style="margin-top:9px"><button data-message="'+x.id+'" data-status="read">Mark read</button><button data-message="'+x.id+'" data-status="replied">Mark replied</button><button data-message="'+x.id+'" data-status="archived">Archive</button></div></div></div>').join('')||'<p class="dash-help">No matching messages.</p>';
+      $('messageList').querySelectorAll('[data-message]').forEach(b=>b.addEventListener('click',async()=>{const {error:e}=await client.from('mahans_messages').update({status:b.dataset.status}).eq('id',b.dataset.message);if(e)alert(e.message);else renderRequests();}));
+    };
+    ['messageSearch','messageStatus'].forEach(id=>$(id).addEventListener('input',paint));
+    $('exportMessages').addEventListener('click',()=>downloadCSV('mahans-radio-listener-messages.csv',rows.map(({id,name,phone,request_type,message,status,created_at})=>({id,name,phone,request_type,message,status,created_at}))));
+    $('refreshMessages').addEventListener('click',renderRequests);
+    paint();
   }
   async function renderSettings() {
     const {data,error} = await client.from('mahans_settings').select('*').eq('setting_key','station_profile').maybeSingle();
@@ -190,7 +239,7 @@
     $('dashContent').innerHTML='<p class="dash-help">Loading…</p>';
     try {
       if(tab==='overview') await renderOverview();
-      else if(tab==='content') await renderContent();
+      else if(tab==='content') await renderContent();\n      else if(tab==='analytics') await renderAnalytics();
       else if(tab==='upload') await renderUploads();
       else if(tab==='requests') await renderRequests();
       else if(tab==='settings') await renderSettings();
