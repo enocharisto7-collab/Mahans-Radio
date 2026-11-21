@@ -1,0 +1,10 @@
+{
+  "name": "Mahans Radio 97.9",
+  "short_name": "Mahans Radio",
+  "description": "Mahans Radio — Connecting People Through Radio.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#10130d",
+  "theme_color": "#10130d",
+  "icons": []
+}
